@@ -3,16 +3,8 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster';
 
-const createMap = () => {
-  const map = L.map('map', { preferCanvas: true });
-
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 18,
-    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }).addTo(map);
-
-  return map;
-};
+import KDBush from 'kdbush';
+import { around } from 'geokdbush';
 
 const KYIV_BOUNDS = L.latLngBounds(
   L.latLng(50.299496341000065, 30.245271611000078),
@@ -28,6 +20,20 @@ const SHELTER_ICON = L.icon({
   iconSize: [24, 24],
 });
 
+const RADIUS_METERS = 2000;
+const NEARBY_SHELTERS_COUNT = 10;
+
+const createMap = () => {
+  const map = L.map('map', { preferCanvas: true });
+
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  }).addTo(map);
+
+  return map;
+};
+
 const loadShelters = async () => {
   const cached = localStorage.getItem(STORAGE_KEY);
 
@@ -35,39 +41,51 @@ const loadShelters = async () => {
     return JSON.parse(cached);
   }
 
-  const res = await fetch(API_URL);
-  const data = await res.json();
-  const seen = new Set();
+  try {
+    const res = await fetch(API_URL);
 
-  const shelters = data.features
-    .map(({ attributes }) => ({
-      lat: Number(attributes.lat.toFixed(6)),
-      lng: Number(attributes.long.toFixed(6)),
-      district: attributes.district,
-      address: attributes.address,
-      kind: attributes.kind,
-      typeBuilding: attributes.type_building,
-      tel: attributes.tel,
-      invalid: attributes.invalid,
-      description: attributes.description,
-      phonenumb: attributes.phonenumb,
-      title: attributes.title,
-      linkFull: attributes.link_full,
-      workingTime: attributes.working_time,
-    }))
-    .filter(({ lat, lng }) => {
-      const coordKey = `${lat},${lng}`;
+    if (!res.ok) {
+      throw new Error(`API error: ${res.status}`);
+    }
 
-      if (seen.has(coordKey)) return false;
+    const data = await res.json();
+    const seen = new Set();
 
-      seen.add(coordKey);
+    const shelters = data.features
+      .map(({ attributes }) => ({
+        lat: Number(attributes.lat.toFixed(6)),
+        lng: Number(attributes.long.toFixed(6)),
+        district: attributes.district,
+        address: attributes.address,
+        kind: attributes.kind,
+        typeBuilding: attributes.type_building,
+        tel: attributes.tel,
+        invalid: attributes.invalid,
+        description: attributes.description,
+        phonenumb: attributes.phonenumb,
+        title: attributes.title,
+        linkFull: attributes.link_full,
+        workingTime: attributes.working_time,
+      }))
+      .filter(({ lat, lng }) => {
+        const coordKey = `${lat},${lng}`;
 
-      return true;
-    });
+        if (seen.has(coordKey)) return false;
 
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(shelters));
+        seen.add(coordKey);
 
-  return shelters;
+        return true;
+      });
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(shelters));
+
+    return shelters;
+  }
+  catch (error) {
+    console.error('Error loading shelters:', error);
+
+    return [];
+  }
 };
 
 const createShelterMarker = (shelter) => {
@@ -136,6 +154,24 @@ const createCluster = (shelters) => {
   return clusterGroup;
 };
 
+const createShelterIndex = (shelters) => {
+  const index = new KDBush(shelters.length);
+
+  for (const { lat, lng } of shelters) index.add(lng, lat);
+  index.finish();
+
+  return index;
+};
+
+const getCurrentPosition = () => new Promise((resolve, reject) => {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => resolve(L.latLng(pos.coords.latitude, pos.coords.longitude)),
+    (err) => {
+      reject(new Error(`Geolocation failed: ${err.message}`));
+    },
+  );
+});
+
 const map = createMap();
 
 map.fitBounds(KYIV_BOUNDS);
@@ -144,3 +180,37 @@ const shelters = await loadShelters();
 const markersCluster = createCluster(shelters);
 
 markersCluster.addTo(map);
+
+const shelterIndex = createShelterIndex(shelters);
+
+try {
+  const userLatLng = await getCurrentPosition();
+
+  map.removeLayer(markersCluster);
+
+  const userMarker = L.circleMarker(userLatLng, {
+    radius: 8,
+    color: '#3b67f8',
+    fillOpacity: 1,
+  });
+
+  userMarker.addTo(map);
+
+  map.setView(userLatLng, 16);
+
+  const nearbyShelterIds = around(
+    shelterIndex,
+    userLatLng.lng,
+    userLatLng.lat,
+    NEARBY_SHELTERS_COUNT,
+    RADIUS_METERS / 1000,
+  );
+
+  const nearbyShelters = nearbyShelterIds.map((i) => shelters[i]);
+  const nearbySheltersCluster = createCluster(nearbyShelters);
+
+  map.addLayer(nearbySheltersCluster);
+}
+catch (error) {
+  console.error(error);
+}
