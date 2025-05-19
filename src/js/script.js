@@ -1,5 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster';
 
 const createMap = () => {
   const map = L.map('map', { preferCanvas: true });
@@ -98,12 +100,47 @@ const createShelterMarker = (shelter) => {
 const createShelterMarkers = (shelters) =>
   shelters.map(createShelterMarker);
 
+const createClusterElement = (cluster) => {
+  const container = document.createElement('div');
+  const icon = document.createElement('img');
+  const count = document.createElement('div');
+
+  container.classList.add('shelter-cluster');
+  icon.src = SHELTER_ICON_URL;
+  icon.classList.add('shelter-icon');
+  count.classList.add('shelter-count');
+  count.textContent = `${cluster.getChildCount()}`;
+
+  container.appendChild(icon);
+  container.appendChild(count);
+
+  return container;
+};
+
+const createCluster = (shelters) => {
+  const markers = createShelterMarkers(shelters);
+
+  const clusterGroup = L.markerClusterGroup({
+    disableClusteringAtZoom: 14,
+    maxClusterRadius: 80,
+    iconCreateFunction(cluster) {
+      return L.divIcon({
+        html: createClusterElement(cluster),
+        className: '',
+      });
+    },
+  });
+
+  clusterGroup.addLayers(markers);
+
+  return clusterGroup;
+};
+
 const map = createMap();
 
 map.fitBounds(KYIV_BOUNDS);
 
 const shelters = await loadShelters();
-const markers = createShelterMarkers(shelters);
-const markersGroup = L.featureGroup(markers);
+const markersCluster = createCluster(shelters);
 
-markersGroup.addTo(map);
+markersCluster.addTo(map);
