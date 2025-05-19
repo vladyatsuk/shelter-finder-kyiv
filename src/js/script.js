@@ -247,6 +247,71 @@ const createRouteControl = (waypoints) => {
   });
 };
 
+class RouteNavigator {
+  route;
+  marker;
+  instructionIndex;
+
+  constructor(route, marker, pos) {
+    this.route = route;
+    this.marker = marker;
+    this.instructionIndex = 0;
+
+    this.updatePosition(pos);
+  }
+
+  speak(text) {
+    speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    utterance.lang = 'uk-UA';
+    utterance.rate = 1.25;
+    speechSynthesis.speak(utterance);
+  }
+
+  updatePosition(pos) {
+    this.marker.setLatLng(pos);
+
+    const { instructions, coordinates } = this.route;
+
+    if (this.instructionIndex >= instructions.length) return;
+
+    const instruction = instructions[this.instructionIndex];
+    const coord = coordinates[instruction.index] || coordinates[0];
+    const instructionLatLng = L.latLng(coord.lat, coord.lng);
+
+    const distance = pos.distanceTo(instructionLatLng);
+
+    console.log(`Distance to instruction ${this.instructionIndex}: ${distance.toFixed(2)} m`);
+
+    if (distance < 15) {
+      this.speak(instruction.text);
+      this.instructionIndex += 1;
+    }
+  }
+}
+
+const simulatePosition = (routeNavigator, positions, interval = 2000) => {
+  let index = 0;
+
+  const intervalId = setInterval(() => {
+    if (index >= positions.length) {
+      clearInterval(intervalId);
+
+      return;
+    }
+
+    const pos = positions[index];
+    const latlng = L.latLng(pos.lat, pos.lng);
+
+    console.log(`Debug move to: { lat: ${pos.lat.toFixed(6)}, lng: ${pos.lng.toFixed(6)} }`);
+
+    routeNavigator.updatePosition(latlng);
+    index += 1;
+  }, interval);
+};
+
 const map = createMap();
 
 map.fitBounds(KYIV_BOUNDS);
@@ -260,8 +325,6 @@ const shelterIndex = createShelterIndex(shelters);
 
 try {
   const userLatLng = await getCurrentPosition();
-
-  map.removeLayer(markersCluster);
 
   const userMarker = L.circleMarker(userLatLng, {
     radius: 8,
@@ -282,9 +345,6 @@ try {
   );
 
   const nearbyShelters = nearbyShelterIds.map((i) => shelters[i]);
-  const nearbySheltersCluster = createCluster(nearbyShelters);
-
-  map.addLayer(nearbySheltersCluster);
 
   try {
     const closestShelterLatLng =
@@ -294,6 +354,45 @@ try {
     const routeControl = createRouteControl(waypoints);
 
     routeControl.addTo(map);
+
+    routeControl.on('routesfound', (e) => {
+      const fastestRoute = e.routes[0];
+
+      const routeNavigator = new RouteNavigator(
+        fastestRoute,
+        userMarker,
+        userLatLng,
+      );
+
+      if (new URLSearchParams(window.location.search).get('debug') === 'true') {
+        map.on('click', (e) => {
+          const pos = e.latlng;
+
+          console.log(`{ lat: ${pos.lat.toFixed(6)}, lng: ${pos.lng.toFixed(6)} }`);
+
+          routeNavigator.updatePosition(pos);
+        });
+
+        simulatePosition(routeNavigator, fastestRoute.coordinates, 1000);
+      }
+      else {
+        const watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const latlng = L.latLng(pos.coords.latitude, pos.coords.longitude);
+
+            routeNavigator.updatePosition(latlng);
+          },
+          (err) => {
+            console.error('Geolocation watchPosition error:', err);
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 10000,
+            timeout: 10000,
+          },
+        );
+      }
+    });
   }
   catch (error) {
     console.log('Could not determine closest shelter route:', error);
