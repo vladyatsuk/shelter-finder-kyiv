@@ -2,6 +2,8 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster';
+import 'leaflet-routing-machine';
+import 'leaflet-routing-machine/dist/leaflet-routing-machine.css';
 
 import KDBush from 'kdbush';
 import { around } from 'geokdbush';
@@ -172,6 +174,79 @@ const getCurrentPosition = () => new Promise((resolve, reject) => {
   );
 });
 
+const findShortestRoute = async (source, shelters) => {
+  try {
+    const baseUrl = 'https://routing.openstreetmap.de/routed-foot/table/v1/driving';
+    const sourceCoords = `${source.lng},${source.lat}`;
+    const destCoords = shelters.map(({ lng, lat }) => `${lng},${lat}`).join(';');
+    const sourceIndex = 0;
+    const destIndexes = shelters.map((_, i) => i + 1).join(';');
+    const fullUrl = `${baseUrl}/${sourceCoords};${destCoords}?sources=${sourceIndex}&destinations=${destIndexes}`;
+
+    const response = await fetch(fullUrl);
+
+    if (!response.ok) {
+      throw new Error(`Routing API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const durations = data.durations[0];
+
+    const minIndex = durations.reduce(
+      (minIdx, duration, idx, arr) =>
+        duration < arr[minIdx] ? idx : minIdx,
+      0,
+    );
+
+    const [lng, lat] = data.destinations[minIndex].location;
+
+    return L.latLng(lat, lng);
+  }
+  catch (error) {
+    console.error('Error finding shortest route:', error);
+    throw error;
+  }
+};
+
+const createRouteControl = (waypoints) => {
+  const itineraryOptions = {
+    collapsible: true,
+    formatter: L.routing.formatter({
+      unitNames: {
+        meters: 'м',
+        kilometers: 'км',
+        hours: 'год',
+        minutes: 'хв',
+        seconds: 'с',
+      },
+    }),
+  };
+
+  const lineOptions = { addWaypoints: false };
+
+  const plan = L.Routing.plan(waypoints, {
+    createMarker() {
+      return null;
+    },
+    addWaypoints: false,
+    draggableWaypoints: false,
+    routeWhileDragging: false,
+  });
+
+  return L.Routing.control({
+    ...itineraryOptions,
+    lineOptions,
+    waypoints,
+    plan,
+    showAlternatives: false,
+    router: L.Routing.osrmv1({
+      serviceUrl: 'https://routing.openstreetmap.de/routed-foot/route/v1/',
+      language: 'uk',
+    }),
+    routingOptions: { alternatives: false },
+  });
+};
+
 const map = createMap();
 
 map.fitBounds(KYIV_BOUNDS);
@@ -210,6 +285,19 @@ try {
   const nearbySheltersCluster = createCluster(nearbyShelters);
 
   map.addLayer(nearbySheltersCluster);
+
+  try {
+    const closestShelterLatLng =
+      await findShortestRoute(userLatLng, nearbyShelters);
+
+    const waypoints = [userLatLng, closestShelterLatLng];
+    const routeControl = createRouteControl(waypoints);
+
+    routeControl.addTo(map);
+  }
+  catch (error) {
+    console.log('Could not determine closest shelter route:', error);
+  }
 }
 catch (error) {
   console.error(error);
