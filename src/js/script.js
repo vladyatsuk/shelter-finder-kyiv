@@ -17,6 +17,93 @@ const KYIV_BOUNDS = L.latLngBounds(
   L.latLng(50.56875271300004, 30.724170000000072),
 );
 
+const API_URL = 'https://gisserver.kyivcity.gov.ua/mayno/rest/services/KYIV_API/%D0%9A%D0%B8%D1%97%D0%B2_%D0%A6%D0%B8%D1%84%D1%80%D0%BE%D0%B2%D0%B8%D0%B9/MapServer/0/query?where=1%3D1&text=&objectIds=&time=&geometry=&geometryType=esriGeometryEnvelope&inSR=&spatialRel=esriSpatialRelIntersects&distance=&units=esriSRUnit_Foot&relationParam=&outFields=*&returnGeometry=true&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=4326&havingClause=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&historicMoment=&returnDistinctValues=false&resultOffset=&resultRecordCount=&returnExtentOnly=false&datumTransformation=&parameterValues=&rangeValues=&quantizationParameters=&featureEncoding=esriDefault&f=pjson';
+const STORAGE_KEY = 'shelters';
+const SHELTER_ICON_URL = '/icons/shelter.svg';
+
+const SHELTER_ICON = L.icon({
+  iconUrl: SHELTER_ICON_URL,
+  iconSize: [24, 24],
+});
+
+const loadShelters = async () => {
+  const cached = localStorage.getItem(STORAGE_KEY);
+
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  const res = await fetch(API_URL);
+  const data = await res.json();
+  const seen = new Set();
+
+  const shelters = data.features
+    .map(({ attributes }) => ({
+      lat: Number(attributes.lat.toFixed(6)),
+      lng: Number(attributes.long.toFixed(6)),
+      district: attributes.district,
+      address: attributes.address,
+      kind: attributes.kind,
+      typeBuilding: attributes.type_building,
+      tel: attributes.tel,
+      invalid: attributes.invalid,
+      description: attributes.description,
+      phonenumb: attributes.phonenumb,
+      title: attributes.title,
+      linkFull: attributes.link_full,
+      workingTime: attributes.working_time,
+    }))
+    .filter(({ lat, lng }) => {
+      const coordKey = `${lat},${lng}`;
+
+      if (seen.has(coordKey)) return false;
+
+      seen.add(coordKey);
+
+      return true;
+    });
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(shelters));
+
+  return shelters;
+};
+
+const createShelterMarker = (shelter) => {
+  const location = L.latLng(shelter.lat, shelter.lng);
+
+  const destination = `${shelter.lat},${shelter.lng}`;
+  const encodedDestination = encodeURIComponent(destination);
+  const baseUrl = 'https://www.google.com/maps/dir/?api=1';
+  const fullUrl = `${baseUrl}&destination=${encodedDestination}&travelmode=walking&dir_action=navigate`;
+
+  const popupContent = [
+    `<strong>${shelter.title}</strong>`,
+    `<b>Адреса:</b> ${shelter.address}`,
+    `<b>Район:</b> ${shelter.district}`,
+    `<b>Тип будівлі:</b> ${shelter.typeBuilding}`,
+    `<b>Вид:</b> ${shelter.kind}`,
+    `<b>Координати:</b> ${shelter.lat}, ${shelter.lng}`,
+    `<b>Телефон:</b> ${shelter.tel || shelter.phonenumb || '-'}`,
+    `<b>Доступність для людей з інвалідністю:</b> ${shelter.invalid}`,
+    `<b>Опис:</b> ${shelter.description}`,
+    `<b>Час роботи:</b> ${shelter.workingTime}`,
+    `${shelter.linkFull}`,
+    `<a target="_blank" href="${fullUrl}" rel="noopener noreferrer">Навігація в Google Maps</a>`,
+  ].join('<br>');
+
+  return L.marker(location, { icon: SHELTER_ICON })
+    .bindPopup(popupContent);
+};
+
+const createShelterMarkers = (shelters) =>
+  shelters.map(createShelterMarker);
+
 const map = createMap();
 
 map.fitBounds(KYIV_BOUNDS);
+
+const shelters = await loadShelters();
+const markers = createShelterMarkers(shelters);
+const markersGroup = L.featureGroup(markers);
+
+markersGroup.addTo(map);
